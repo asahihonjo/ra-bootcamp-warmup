@@ -1,0 +1,260 @@
+---
+title: "ra-bootcamp-warmup"
+author: "Asahi Honjo"
+date: "2024-08-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(readxl)
+library(ggplot2)
+library(rlang)
+library(stargazer)
+```
+
+## データ整理と変換
+## (a) Semester Dataの整形
+```{r}
+# 1. 生データ（semester_data_1.csvとsemester_data_2.csv）を読み込む
+# 2. semester_data_1.csv は1行目を列とする
+
+semester_data_1 <- read.csv("/Users/asahihonjo/ra-bootcamp-warmup/data/raw/semester_dummy/semester_data_1.csv",  header = TRUE)
+semester_data_2 <- read.csv("/Users/asahihonjo/ra-bootcamp-warmup/data/raw/semester_dummy/semester_data_2.csv",  header = FALSE)
+
+
+# 3. 2つのデータを結合する
+# まず，2つ目のデータフレームの列名を1つ目のデータフレームの列名に合わせる
+colnames(semester_data_2) <- colnames(semester_data_1)
+
+# 2つのデータを結合し，semester_data と名づける
+semester_data <- rbind(semester_data_1, semester_data_2)
+
+
+# 4. 'Y'列を削除
+if ("Y" %in% names(semester_data)) {
+  semester_data <- semester_data %>% select(-Y)
+}
+
+print(head(semester_data))
+
+```
+
+## (b) Gradrate Dataの整形
+```{r}
+# 1. 生データを読み込み結合する
+# ディレクトリ内のファイルパスを取得
+file_paths <- list.files("/Users/asahihonjo/ra-bootcamp-warmup/data/raw/outcome", pattern = "\\.xlsx$", full.names = TRUE)
+
+file_paths <- file_paths[!grepl("~\\$", file_paths)]
+
+# 空のリストを作成して、各ファイルのデータを格納
+data_list <- list()
+
+# forループで各ファイルを読み込み、リストに追加
+for (file in file_paths) {
+  data <- read_excel(file)  # Excelファイルを読み込み
+  data_list[[file]] <- data  # データをリストに追加
+}
+
+# リスト内のすべてのデータフレームを1つに結合
+gradrate_data <- bind_rows(data_list)
+
+# 2. 女子学生の4年卒業率に0.01をかけて、0から1のスケールに変更
+
+gradrate_data <- gradrate_data %>%
+  mutate(
+    womengradrate4yr = women_gradrate_4yr * 0.01
+  )
+
+# 3. 男女合計の4年卒業率と男子学生の4年卒業率を計算し、新たな列として追加
+
+gradrate_data <- gradrate_data %>%
+  mutate(
+    m_4yrgrads = as.numeric(m_4yrgrads),
+    totcohortsize = as.numeric(totcohortsize)
+  ) %>%
+  mutate(
+    mengradrate4yr = m_4yrgrads / m_cohortsize,
+    gradrate4yr = tot4yrgrads / totcohortsize
+  )
+
+
+# 4. 計算した卒業率を有効数字3桁に調整
+gradrate_data <- gradrate_data %>%
+  mutate(across(ends_with("gradrate_4yr"), ~ round(., 3)))
+
+# 5. 1991年から2010年までのデータフレームに変形
+gradrate_data <- gradrate_data %>%
+  filter(year >= 1991 & year <= 2010)
+
+print(head(gradrate_data))
+
+
+```
+
+## (c) Covariates Data の整形
+
+```{r}
+# 1. 生データの読み込み
+covariates_data <- read_excel("/Users/asahihonjo/ra-bootcamp-warmup/data/raw/covariates/covariates.xlsx")
+
+# 2. 'university_id’という列名を’unitid’に変更
+covariates_data <- covariates_data %>%
+  rename(unitid = university_id)
+
+# 3. 'united'に含まれる"aaaa"という文字を削除
+covariates_data <- covariates_data %>%
+  mutate(unitid = str_replace_all(unitid, "aaaa", ""))
+
+# 4. wide型への変更
+# 数値型に変換する列を指定
+numeric_columns <- c("unitid", "year")  
+covariates_data <- covariates_data %>%
+  mutate(across(all_of(numeric_columns), as.numeric))
+
+# pivot_widerでロング形式からワイド形式に変更
+covariates_data <- covariates_data %>%
+  pivot_wider(names_from = category, values_from = value)
+
+# outcome_data に含まれる年を特定
+gradrate_years <- unique(gradrate_data$year)
+gradrate_years
+
+# semester_data に含まれる年を特定
+semester_years <- unique(semester_data_1$year)
+semester_years
+
+# これらの年を合成して共通の年を抽出
+common_years <- intersect(gradrate_years, semester_years)
+
+# covariates_data の期間を揃える
+covariates_data <- covariates_data %>%
+  filter(year %in% gradrate_years)
+
+# 4. unitidをそろえる
+covariates_data <- covariates_data %>%
+  filter(unitid %in% unique(gradrate_data$unitid))
+
+print(head(covariates_data))
+print(colnames(covariates_data))
+
+```
+
+## (d) Master Data の作成
+```{r}
+# semester_dataがうまくいっていないので配布資料を利用
+clean_semester_dummy <- read.csv("/Users/asahihonjo/ra-bootcamp-warmup/data/intermediate/clean_semester_dummy.csv")
+
+final_data <- gradrate_data %>%
+  left_join(clean_semester_dummy, by =c("unitid", "year")) %>%
+  left_join(covariates_data, by = c("unitid", "year"))
+
+print(head(final_data))
+print(names(final_data))
+```
+
+
+## (a) 記述統計
+```{r}
+# 1. 「(d) Master Dataの作成」で作成したデータの、各列に含まれるNAの数を数える
+# 分析にあたっては配布データを利用する
+master_data <- read.csv("/Users/asahihonjo/ra-bootcamp-warmup/data/intermediate/master.csv")　# データの読み込み
+na_counts <- colSums(is.na(master_data))　# NAを数える
+print(na_counts)
+```
+
+```{r, results='asis'}
+# 2. 記述統計
+stargazer(as.data.frame(master_data), type = "html")
+```
+
+```{r}
+# 3. 4年卒業率の平均推移を計算し、図で示す
+# 4年卒業率の平均推移を計算
+avg_gradrate <- master_data %>%
+  group_by(year) %>%
+  summarise(mean_gradrate = mean(gradrate4yr, na.rm = TRUE))
+
+# 図で示す
+ggplot(avg_gradrate, aes(x = year, y = mean_gradrate)) +
+  geom_line() +
+  labs(title = "Average trends in 4year graduration rate", x = "year", y = "4year graduration rate")
+
+# 4. semester導入率を計算し、図で示す
+# semester導入率を計算
+semester_rate <- master_data %>%
+  group_by(year) %>%
+  summarise(semester_rate = mean(semester, na.rm = TRUE))
+
+# 図で示す
+ggplot(semester_rate, aes(x = year, y =semester_rate)) +
+  geom_line() +
+  labs(title = "Fraction of schools on semesters per year", x = "year", y = "Fraction of schools on semesters")
+```
+
+```{r}
+# 散布図を作成する関数
+plot_scatter <- function(data, x_var, y_var, title) {
+  # 引数をクオートしてキャプチャ
+  x_var <- enquo(x_var)
+  y_var <- enquo(y_var)
+  
+  # ggplot2を使って散布図を作成
+  ggplot(data, aes(x = !!x_var, y = !!y_var)) +
+    geom_point() +
+    labs(x = quo_name(x_var), y = quo_name(y_var)) +
+    ggtitle(title) + 
+    theme_minimal()
+}
+
+
+
+master_data <- master_data %>%
+mutate(
+    w_cohortsize = as.numeric(w_cohortsize),
+    totcohortsize = as.numeric(totcohortsize),
+    white_cohortsize = as.numeric(white_cohortsize),
+    totcohortsize = as.numeric(totcohortsize)
+  ) %>%
+  mutate(women_rate = w_cohortsize / totcohortsize,
+          white_rate= white_cohortsize / totcohortsize)
+
+# 女子学生比率 vs 4年卒業率
+plot1 <- plot_scatter(master_data, women_rate, gradrate4yr,"Gradrate vs Womenrate")
+
+# 白人学生割合 vs 4年卒業率
+plot2 <- plot_scatter(master_data, white_rate, gradrate4yr,"Gradrate vs Whiterate")
+
+# 学費 vs 4年卒業率
+plot3 <- plot_scatter(master_data, instatetuition, gradrate4yr,"Gradrate vs Instatetuition")
+
+# プロットを表示
+print(plot1)
+print(plot2)
+print(plot3)
+```
+
+
+
+```{r}
+library(estimatr)
+
+# 回帰分析の実行
+model <- lm(gradrate4yr~semester, data = master_data)
+```
+
+```{r, results='asis'}
+# 分析結果の表示
+stargazer(model, type = "html")
+
+```
+
+
+
